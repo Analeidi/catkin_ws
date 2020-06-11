@@ -1,160 +1,114 @@
-#!/usr/bin/env python3.5
-
-"""--------------------------------------------------------------------------------
-olin_cnn.py
-Author: Jinyoung Lim, Avik Bosshardt, Angel Sylvester and Maddie AlQatami
-Creation Date: July 2018
-Updated: Summer 2019, Summer 2020
-A convolutional neural network to classify 2x2 cells of Olin Rice. Based on
-Floortype Classifier CNN, which is based on CIFAR10 tensorflow tutorial
-(layer architecture) and cat vs dog kaggle (preprocessing) as guides. Uses
-Keras as a framework.
-Acknowledgements:
-    ft_floortype_classifier
-        floortype_cnn.py
-Notes:
-    Warning: "Failed to load OpenCL runtime (expected version 1.1+)"
-        Do not freak out you get this warning. It is expected and not a problem per
-        https://github.com/tensorpack/tensorpack/issues/502
-    Error: F tensorflow/stream_executor/cuda/cuda_dnn.cc:427] could not set cudnn
-        tensor descriptor: CUDNN_STATUS_BAD_PARAM. Might occur when feeding an
-        empty images/labels
-    To open up virtual env:
-        source ~/tensorflow/bin/activate
-    Use terminal if import rospy does not work on PyCharm but does work on a
-    terminal
-FULL TRAINING IMAGES LOCATED IN match_seeker/scripts/olri_classifier/frames/moreframes
---------------------------------------------------------------------------------"""
-
-
-# from __future__ import absolute_import
-# from __future__ import division
-# from __future__ import print_function
+#!/usr/bin/env python2.7
+# """--------------------------------------------------------------------------------
+# olin_cnn.py
+# Author: Jinyoung Lim, Avik Bosshardt, Angel Sylvester and Maddie AlQatami
+# Date: July 2018
+#
+# A convolutional neural network to classify 2x2 cells of Olin Rice. Based on
+# Floortype Classifier CNN, which is based on CIFAR10 tensorflow tutorial
+# (layer architecture) and cat vs dog kaggle (preprocessing) as guides. Uses
+# Keras as a framework.
+#
+# Acknowledgements:
+#     ft_floortype_classifier
+#         floortype_cnn.py
+#
+# Notes:
+#     Warning: "Failed to load OpenCL runtime (expected version 1.1+)"
+#         Do not freak out you get this warning. It is expected and not a problem per
+#         https://github.com/tensorpack/tensorpack/issues/502
+#
+#     Error: F tensorflow/stream_executor/cuda/cuda_dnn.cc:427] could not set cudnn
+#         tensor descriptor: CUDNN_STATUS_BAD_PARAM. Might occur when feeding an
+#         empty images/labels
+#
+#     To open up virtual env:
+#         source ~/tensorflow/bin/activate
+#
+#     Use terminal if import rospy does not work on PyCharm but does work on a
+#     terminal
+#
+#
+# FULL TRAINING IMAGES LOCATED IN match_seeker/scripts/olri_classifier/frames/moreframes
+# --------------------------------------------------------------------------------"""
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 import os
 import numpy as np
 from tensorflow import keras
 import cv2
 import time
-#from paths import pathToMatchSeeker
-#import olin_inputs_2019 as oi2
-import random
-
-
-
-
 
 ### Uncomment next line to use CPU instead of GPU: ###
 # os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
 class OlinClassifier(object):
-    def __init__(self, eval_ratio=0.1, checkpoint_name=None, dataImg= None, dataLabel= None, num_cells=271, cellInput=False, headingInput=False, image_size=224, image_depth=3):
-    ### Set up paths and basic model hyperparameters
+    def __init__(self, eval_ratio=0.1, checkpoint_name=None, train_data=None, num_cells=271, train_with_headings=False):
+        ### Set up paths and basic model hyperparameters
 
-        #self.checkpoint_dir = pathToMatchSeeker + "res/classifier2019data/CHECKPOINTS/olin_cnn_checkpoint-{}/".format(time.strftime("%m%d%y%H%M"))
+        self.checkpoint_dir = "CHECKPOINTS/olin_cnn_checkpoint-{}/".format(time.strftime("%m%d%y%H%M"))
         self.num_cells = num_cells
         self.eval_ratio = eval_ratio
         self.learning_rate = 0.001
 
-        self.cellInput = cellInput
-        self.headingInput = headingInput
-        self.neitherAsInput = (not cellInput) and (not headingInput)
-
-        #ORIG self.dataFile = dataFile
-        self.dataImg = dataImg
-        self.dataLabel = dataLabel
-        self.dataArray = None
-        self.image_size = image_size
-        self.image_depth = image_depth
-        self.num_eval = None
-        self.train_images = None
-        self.train_labels = None
-        self.eval_images = None
-        self.eval_labels = None
-        self.data_name = None
-
-        if self.neitherAsInput:
-            self.model = self.cnn_headings()
-            self.loss = keras.losses.binary_crossentropy
-        elif self.headingInput:
-            self.model = self.cnn_headings()
-            self.loss = keras.losses.categorical_crossentropy
-        elif self.cellInput:
-            self.model = self.cnn_cells()
-            self.loss = keras.losses.categorical_crossentropy
-        else:  # both as input, seems weird
-            print("At most one of cellInput and headingInput should be true.")
-            self.model = None
-            self.loss = None
-            return
-
-        self.model.compile(
-            loss=self.loss,
-            optimizer=keras.optimizers.SGD(lr=self.learning_rate),
-            metrics=["accuracy"])
-
-        self.checkpoint_name = checkpoint_name
-        if self.checkpoint_name is not None:
-            self.model.load_weights(self.checkpoint_name)
-
-
-    def loadData(self):
-        """Loads the data from the given data file, setting several instance variables to hold training and testing
-        inputs and outputs, as well as other helpful values."""
-        self.image = np.load(self.dataImg)
-        self.label = np.load(self.dataLabel)
-
-        self.image_totalImgs = self.image.shape[0]
+        self.train_data = np.load(train_data,allow_pickle=True,encoding='latin1')
+        self.image_size = self.train_data[0][0].shape[0]
+        self.train_with_headings = train_with_headings
 
         try:
-            self.image_depth = self.image[0].shape[2]
+            self.image_depth = self.train_data[0][0].shape[2]
         except IndexError:
             self.image_depth = 1
 
-        self.num_eval = int((self.eval_ratio * self.image_totalImgs/3))
-
+        self.num_eval = int(self.eval_ratio * self.train_data.size / 3)
         np.random.seed(2845) #45600
+        np.random.shuffle(self.train_data)
 
-        if(len(self.image) == len(self.label)):
-            p = np.random.permutation(len(self.image))
-            self.image = self.image[p]
-            self.label = self.label[p]
+        # train_with_headings was used for models which had two outputs - cell and heading
+        if train_with_headings:
+            self.num_cells += 8
+            self.train_labels = np.array([i[1] + i[2] for i in self.train_data[:-self.num_eval]])
+            self.eval_labels = np.array([i[1] + i[2] for i in self.train_data[-self.num_eval:]])
         else:
-            print("Image data and heading data are  not the same size")
-            return 0
+            self.train_labels = np.array([i[1] for i in self.train_data[:-self.num_eval]])
+            self.eval_labels = np.array([i[1] for i in self.train_data[-self.num_eval:]])
 
-        trainPart = self.image[:-self.num_eval, :]
-        evalPart = self.image[-self.num_eval:, :]
+        self.train_images = np.array([i[0] for i in self.train_data[:-self.num_eval]]).reshape(-1, self.image_size,
+                                                                                               self.image_size,
+                                                                                               self.image_depth)
 
-        #input could include cell data, heading data, or neither (no method right now for doing both as input)
-        if self.neitherAsInput:
-            print("There is no cell or heading as input!")
-        elif self.cellInput:
-            self.train_labels = self.label[:-self.num_eval, :]
-            self.eval_labels = self.label[-self.num_eval:, :]
-            print("YES!")
-        elif self.headingInput:
-            self.train_labels = self.label[:-self.num_eval, :]
-            self.eval_labels = self.label[-self.num_eval:, :]
-        else:
-            print("Cannot have both cell and heading data in input")
+        self.eval_images = np.array([i[0] for i in self.train_data[-self.num_eval:]]).reshape(-1, self.image_size,
+                                                                                              self.image_size,
+                                                                                              self.image_depth)
 
-        self.train_images = trainPart[:, 0]
-        self.eval_images = evalPart[:, 0]
 
+        self.data_name = train_data.split('/')[-1].strip('.npy')
+
+        self.checkpoint_name = checkpoint_name
+        if self.checkpoint_name is not None:
+            # keras.models.load_model(self.checkpoint_name, compile=True)
+            self.model = self.cnn_cells()
+            self.model.compile(
+                loss=keras.losses.categorical_crossentropy,
+                optimizer=keras.optimizers.SGD(lr=self.learning_rate),
+                metrics=["accuracy"])
+            self.model.load_weights(self.checkpoint_name)
 
     def train(self):
-        """Sets up the loss function and optimizer, an d then trains the model on the current training data. Quits if no
-        training data is set up yet."""
-        if self.train_images is None:
-            print("No training data loaded yet.")
-            return
+        # if training with headings, cannot use categorical crossentropy to evaluate loss
+        if self.train_with_headings == True:
+            loss = keras.losses.binary_crossentropy
+        else:
+            loss = keras.losses.categorical_crossentropy
 
-        # if (self.checkpoint_name is None):
-        #     self.model.compile(
-        #         loss=self.loss,
-        #         optimizer=keras.optimizers.SGD(lr=self.learning_rate),
-        #         metrics=["accuracy"]
-        #     )
+        if (self.checkpoint_name is None):
+            self.model = self.cnn_headings()
+            self.model.compile(
+                loss=loss,
+                optimizer=keras.optimizers.SGD(lr=self.learning_rate),
+                metrics=["accuracy"]
+            )
 
         self.model.summary()
 
@@ -183,8 +137,7 @@ class OlinClassifier(object):
         )
 
     def cnn_headings(self):
-        """Builds the model for the network that takes heading as input along with image and produces the cell numbeer."""
-
+        #Original model from summer 2018
         model = keras.models.Sequential()
 
         model.add(keras.layers.Conv2D(
@@ -225,16 +178,16 @@ class OlinClassifier(object):
         model.add(keras.layers.Dropout(0.2))
 
         # activate with softmax when training one label and sigmoid when training both headings and cells
-        if self.neitherAsInput:
-            activation = "sigmoid"
-        else:
-            activation = "softmax"
+        activation = self.train_with_headings * "sigmoid" + (not self.train_with_headings) * "softmax"
         model.add(keras.layers.Dense(units=self.num_cells, activation=activation))
         return model
 
     def cnn_cells(self):
-        """Builds a network that takes an image and an extra channel for the cell number, and produces the heading."""
-        print("Building a model that takes cell number as input")
+        """
+        Has 3 conv-pool-dropout layers, otherwise identical to inference. Used with success for image/heading input
+        network and image/cell input network.
+        """
+
         model = keras.models.Sequential()
 
         model.add(keras.layers.Conv2D(
@@ -289,34 +242,33 @@ class OlinClassifier(object):
         model.add(keras.layers.Dropout(0.2))
 
         # activate with softmax when training one label and sigmoid when training both headings and cells
-        if self.neitherAsInput:
-            activation = "sigmoid"
-        else:
-            activation = "softmax"
+        activation = self.train_with_headings * "sigmoid" + (not self.train_with_headings) * "softmax"
         model.add(keras.layers.Dense(units=self.num_cells, activation=activation))
 
         return model
 
-
     def getAccuracy(self):
-        """Sets up the network, and produces an accuracy value on the evaluation data.
-        If no data is set up, it quits."""
-
-        if self.eval_images is None:
-            return
-
+        # Used to evaluate the accuracy of models with two outputs (cell and heading), where precision was used as a custom metric
         num_eval = 5000
         correctCells = 0
         correctHeadings = 0
         eval_copy = self.eval_images
-        self.model.compile(loss=self.loss, optimizer=keras.optimizers.SGD(lr=0.001), metrics=["accuracy"])
-        self.model.load_weights()
-
+        # np.random.shuffle(eval_copy)
+        self.model = self.cnn_cells()
+        self.model.compile(
+           loss=keras.losses.categorical_crossentropy,
+           optimizer=keras.optimizers.SGD(lr=0.001),
+           metrics=["accuracy"]
+        )
+        self.model.load_weights('/home/macalester/PycharmProjects/catkin_ws/src/match_seeker/scripts/olri_classifier/CHECKPOINTS/cell_acc9704_headingInput_235epochs.hdf5')
+        #self.model = keras.models.load_model('CHECKPOINTS/heading_acc9536_cellInput_3CPD_NEW.hdf5',compile=True)
         for i in range(num_eval):
             loading_bar(i,num_eval)
             image = eval_copy[i]
-            image = np.array([image], dtype="float").reshape(-1, self.image_size, self.image_size, self.image_depth)
+            image = np.array([image],dtype="float").reshape(-1,100,100,2)
             potentialHeadings = [0, 45, 90, 135, 180, 225, 270, 315, 360]
+
+
 
             pred = self.model.predict(image)
             print("correct:{}".format(np.argmax(self.eval_labels[i])))
@@ -336,11 +288,13 @@ class OlinClassifier(object):
         #print("%Correct Headings: " + str(float(correctHeadings) / num_eval))
         return float(correctCells) / num_eval
 
-
     def retrain(self):
-        """This method seems out of date, was used for transfer learning from VGG. DON"T CALL IT!"""
         # Use for retraining models included with keras
         # if training with headings cannot use categorical crossentropy to evaluate loss
+        if self.train_with_headings == True:
+            loss = keras.losses.binary_crossentropy
+        else:
+            loss = keras.losses.categorical_crossentropy
         if self.checkpoint_name is None:
             self.model = keras.models.Sequential()
 
@@ -357,7 +311,7 @@ class OlinClassifier(object):
             self.model.add(keras.layers.Dense(units=self.num_cells, activation=activation))
             self.model.summary()
             self.model.compile(
-                loss=self.loss,
+                loss=loss,
                 optimizer=keras.optimizers.Adam(lr=.001),
                 metrics=["accuracy"]
             )
@@ -365,12 +319,10 @@ class OlinClassifier(object):
             print("Loaded model")
             self.model = keras.models.load_model(self.checkpoint_name, compile=False)
             self.model.compile(
-                loss=self.loss,
+                loss=loss,
                 optimizer=keras.optimizers.Adam(lr=.001),
                 metrics=["accuracy"]
             )
-        print("Train:", self.train_images.shape, self.train_labels.shape)
-        print("Eval:", self.eval_images.shape, self.eval_labels.shape)
         self.model.fit(
             self.train_images, self.train_labels,
             batch_size=100,
@@ -396,96 +348,21 @@ class OlinClassifier(object):
             ]
         )
 
-
     def precision(self,y_true, y_pred):
         """Precision metric.
+
         Use precision in place of accuracy to evaluate models that have multiple outputs. Otherwise it's relatively
         unhelpful. The values returned during training do not represent the accuracy of the model. Use get_accuracy
         after training to evaluate models with multiple outputs.
+
         Only computes a batch-wise average of precision.
+
         Computes the precision, a metric for multi-label classification of how many selected items are relevant.
         """
         true_positives = keras.backend.sum(keras.backend.round(keras.backend.clip(y_true * y_pred, 0, 1)))
         predicted_positives = keras.backend.sum(keras.backend.round(keras.backend.clip(y_pred, 0, 1)))
         precision = true_positives / (predicted_positives + keras.backend.epsilon())
         return precision
-
-
-    def runSingleImage(self, num):
-        imDirectory = pathToMatchSeeker + 'res/classifier2019data/frames/moreframes/'
-        count = 0
-        filename = makeFilename(imDirectory, num)
-        # st = None
-
-        # for fname in os.listdir(imDirectory):
-        #     if count == num:
-        #         st = imDirectory + fname
-        #         break
-
-        # print(imgs)
-        print(filename)
-        if filename is not None:
-            image = cv2.imread(filename)
-            print("This is image:", image)
-            print("This is the shape", image.shape)
-            cellDirectory = pathToMatchSeeker + 'res/classifier2019data/frames/MASTER_CELL_LOC_FRAME_IDENTIFIER.txt'
-            count = 0
-            with open(cellDirectory) as fp:
-                for line in fp:
-                    (fNum, cell, x, y, head) = line.strip().split(' ')
-                    if fNum == str(num):
-                        break
-                    count += 1
-
-
-            cell = oi2.getOneHotLabel(int(cell), 271)
-            cell_arr = []
-            im_arr = []
-            cell_arr.append(cell)
-            im_arr.append(image)
-
-            cell_arr = np.asarray(cell_arr)
-            im_arr = np.asarray(im_arr)
-
-
-            image = clean_image(image, cell=cell)
-
-
-            return self.model.evaluate(image, cell_arr, verbose=2)
-
-
-def makeFilename(path, fileNum):
-    """Makes a filename for reading or writing image files"""
-    formStr = "{0:s}{1:s}{2:0>4d}.{3:s}"
-    name = formStr.format(path, 'frame', fileNum, "jpg")
-    return name
-
-
-def getImageFilenames(path):
-    """Read filenames in folder, and keep those that end with jpg or png  (from copyMarkedFiles.py)"""
-    filenames = os.listdir(path)
-    keepers = []
-    for name in filenames:
-        if name.endswith("jpg") or name.endswith("png"):
-            keepers.append(name)
-    return keepers
-
-
-def extractNum(fileString):
-    """Finds sequence of digits"""
-    numStr = ""
-    foundDigits = False
-    for c in fileString:
-        if c in '0123456789':
-            foundDigits = True
-            numStr += c
-        elif foundDigits:
-            break
-    if numStr != "":
-        return int(numStr)
-    else:
-        return -1
-
 
 def loading_bar(start,end, size = 20):
     # Useful when running a method that takes a long time
@@ -495,7 +372,8 @@ def loading_bar(start,end, size = 20):
 
 
 def check_data():
-    data = np.load(pathToMatchSeeker + 'res/classifier2019Data/DATA/TRAININGDATA_100_500_heading-input_gnrs.npy')
+    data = np.load('/home/macalester/PycharmProjects/catkin_ws/src/match_seeker/scripts/olri_classifier/DATA/TRAININGDATA_100_500_heading-input_gnrs.npy')
+
     np.random.shuffle(data)
     print(data[0])
     potentialHeadings = [0, 45, 90, 135, 180, 225, 270, 315, 360]
@@ -513,7 +391,7 @@ def resave_from_wulver(datapath):
     olin_classifier = OlinClassifier(
         checkpoint_name=None,
         train_data=None,
-        extraInput=False,  # Only use when training networks with BOTH cells and headings
+        train_with_headings=False,  # Only use when training networks with BOTH cells and headings
         num_cells=8, #TODO 271 for cells, 8 for headings
         eval_ratio=0.1
     )
@@ -528,80 +406,16 @@ def resave_from_wulver(datapath):
     print("Loaded weights. Saving...")
     model.save(datapath[:-4]+'_NEW.hdf5')
 
-
-def clean_image(image, data = 'old', cell = None, heading = None):
-    mean = np.load('/home/macalester/PycharmProjects/catkin_ws/src/match_seeker/scripts/olri_classifier/DATA/TRAININGDATA_100_500_mean.npy')
-    image_size = 100
-    if data == 'old': #compatible with olin_cnn 2018
-        resized_image = cv2.resize(image, (image_size, image_size))
-        gray_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2GRAY)
-        image = np.subtract(gray_image, mean)
-        depth = 1
-    elif data == 'vgg16': #compatible with vgg16 network for headings
-        image = cv2.resize(image, (170, 128))
-        x = random.randrange(0, 70)
-        y = random.randrange(0, 28)
-        image = image[y:y + 100, x:x + 100]
-        depth = 3
-    elif data == 'cell_channel':
-        if cell != None:
-            resized_image = cv2.resize(image, (image_size, image_size))
-            gray_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2GRAY)
-            image = np.subtract(gray_image, mean)
-            cell_arr = cell * np.ones((image_size, image_size, 1))
-            image = np.concatenate((np.expand_dims(image,axis=-1),cell_arr),axis=-1)
-            depth = 2
-        else:
-            print("No value for cell found")
-    elif data == 'heading_channel':
-        if heading != None:
-            resized_image = cv2.resize(image, (image_size, image_size))
-            gray_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2GRAY)
-            image = np.subtract(gray_image, mean)
-            cell_arr = heading * np.ones((image_size, image_size, 1))
-            image = np.concatenate((np.expand_dims(image,axis=-1)),axis=-1)
-            depth = 2
-        else:
-            print("No value for heading found")
-    else: #compatible with olin_cnn 2019
-        image = cv2.resize(image, (170, 128))
-        x = random.randrange(0, 70)
-        y = random.randrange(0, 28)
-        cropped_image = image[y:y + 100, x:x + 100]
-        gray_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
-        image = np.subtract(gray_image, mean)
-        depth = 1
-    cleaned_image = np.array([image], dtype="float") \
-        .reshape(1, image_size, image_size, depth)
-    return cleaned_image
-
-
 if __name__ == "__main__":
     # check_data()
     olin_classifier = OlinClassifier(
-        # checkpoint_name=pathToMatchSeeker + 'res/classifier2019data/CHECKPOINTS/heading_acc9517_cellInput_250epochs_95k_NEW.hdf5',
-        # dataFile=pathToMatchSeeker + 'res/classifier2019data/NEWTRAININGDATA_100_500withCellInput95k.npy',
-        checkpoint_name=None,    # pathToMatchSeeker + 'res/classifier2019data/CHECKPOINTS/cell_acc9705_headingInput_155epochs_95k_NEW.hdf5',
-        dataImg='/Users/analeidibarrera/Documents/GitHub/catkin_ws/src/match_seeker/scripts/olri_classifier/frames/SAMPLETRAININGDATA_IMG_withCellInput12K.npy',
-        dataLabel= '/Users/analeidibarrera/Documents/GitHub/catkin_ws/src/match_seeker/scripts/olri_classifier/frames/SAMPLETRAININGDATA_HEADING_withCellInput12K.npy',
+        checkpoint_name=None,#'/home/macalester/PycharmProjects/catkin_ws/src/match_seeker/scripts/olri_classifier/CHECKPOINTS/cell_acc95_headingInput_150epochs.hdf5', #None,
+        train_data='/home/macalester/PycharmProjects/catkin_ws/src/match_seeker/scripts/olri_classifier/NEWTRAININGDATA_100_500withCellInput95k.npy', #TODO: replace with correct path
+        train_with_headings=False, #Only use when training networks with BOTH cells and headings
         num_cells=8,
-        eval_ratio=0.1,
-        image_size=100,
-        cellInput=True,
-        image_depth=1
+        eval_ratio=0.1
     )
-
-    print("Classifier built")
-    #olin_classifier.loadData()
-    #print("Data loaded")
-    # print(len(olin_classifier.train_images))
-    #ORIG print(olin_classifier.model.summary())
-    olin_classifier.loadData()
-
-    #olin_classifier.train()
     # olin_classifier.getAccuracy()
-    #olin_classifier.runSingleImage(0)
-
-
     # model = olin_classifier.threeConv()
-    #olin_classifier.train()
+    # olin_classifier.train()
+
